@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtual environment
+venv/
+.venv/
+
+# Secrets / environment
+.env
+
+# IDE / test cache
+.vscode/
+.pytest_cache/

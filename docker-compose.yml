@@ -1,0 +1,25 @@
+services:
+  db:
+    image: postgres:18
+    restart: always
+    environment:
+      POSTGRES_USER: cashflowiq
+      POSTGRES_DB: cashflowiq
+      POSTGRES_PASSWORD: jonsnow
+    ports:
+      - "5433:5432"
+    volumes:
+      - db-data:/var/lib/postgresql
+  admin:
+    image: dpage/pgadmin4
+    restart: always
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: jonsnow
+    ports:
+      - 8080:80
+    volumes:
+      - db-data:/var/lib/postgresql # was /var/lib/postgresql/data
+volumes:
+  db-data:
+  admin-data:
