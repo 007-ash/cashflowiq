@@ -1,14 +1,12 @@
+import statistics
 from collections.abc import Sequence
 from decimal import Decimal
-import statistics
-from models import Category, Transaction, Direction
+
+from models import Category, Direction, Transaction
 
 
 MonthKey = tuple[int, int]
-
 Band = tuple[float, float, int]
-
-# the grader
 
 
 def _score_from_bands(
@@ -62,28 +60,29 @@ INCOME_BANDS: list[Band] = [
 
 def income_stability(transactions: Sequence[Transaction]) -> tuple[float, int]:
     monthly_totals = list(_income_by_month(
-        transactions).values())   # 1. get monthly incomes
+        transactions).values())   # get monthly incomes
 
-    # 2. need 2+ months to see bounce
+    # need 2+ months to see bounce
     if len(monthly_totals) < 2:
         raise ValueError("Need at least 2 months of income")
 
-    # 3. money -> plain numbers
+    # money -> plain numbers
     values = [float(total) for total in monthly_totals]
 
-    # 4. the average
+    # the average
     average = statistics.mean(values)
-    if average == 0:                                                 # 5. can't divide by zero
+    # cannot divide by zero
+    if average == 0:
         raise ValueError("Income average is zero")
 
-    # 6. how much it bounces
+    # how much it bounces
     spread = statistics.pstdev(values)
-    # 7. bounciness (the CoV)
+    # coefficient of variation.
     cov = spread / average
 
-    # 8. look up the grade
+    # look up the grade
     score = _score_from_bands(cov, INCOME_BANDS)
-    # 9. hand back both
+    # hand back both
     return (cov, score)
 
 
@@ -109,7 +108,7 @@ def recurring_expense_ratio(transactions: Sequence[Transaction]) -> tuple[float,
     if total_income == 0:                                  # can't divide by zero income
         raise ValueError("No income to compare expenses against")
 
-    ratio = float(total_expenses) / float(total_income)    # the metric
+    ratio = float(total_expenses / total_income)    # the metric
     score = _score_from_bands(ratio, EXPENSE_BANDS)        # grade it
     return (ratio, score)
 
@@ -125,7 +124,7 @@ OVERDRAFT_COUNT_BANDS: list[Band] = [
 
 # returns a count
 def overdraft_count(transactions: Sequence[Transaction]) -> tuple[int, int]:
-    # our seed data has fee as an overdraft fee, that said their on multiple take of fees a bank may charge
+    # In the current seed data, Category.fee represents overdraft or NSF fees.
     fee_count = sum(
         1 for transaction in transactions if transaction.category == Category.fee)
     score = _score_from_bands(fee_count, OVERDRAFT_COUNT_BANDS)
@@ -156,11 +155,14 @@ def net_cash_flow_ratio(transactions: Sequence[Transaction]) -> tuple[float, int
     if total_income == 0:
         raise ValueError("No income to measure cash-flow ratio against")
 
-    net = float(total_income - total_recurring_expenses -
-                total_fees - total_other_spending)
+    net = (
+        total_income
+        - total_recurring_expenses
+        - total_fees
+        - total_other_spending
+    )
 
-    # Keep money exact; convert only the final ratio to float. Units cancel out.
-    ratio = float(net) / float(total_income)
+    ratio = float(net / total_income)
     score = _score_from_bands(ratio, NET_CASH_FLOW_BANDS)
     return (ratio, score)
 

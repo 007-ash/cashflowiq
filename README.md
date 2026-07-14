@@ -1,80 +1,180 @@
 # CashFlowIQ
 
-## Problem Statement
+CashFlowIQ turns three complete months of bank transactions into a transparent **0–100 cash-flow risk score** and a plain-English explanation.
 
-> **[Ash — write one paragraph here, in your own words.]**
-> This is the anchor for every design decision in the project. Before any feature,
-> ask: does this serve the problem stated here? If not, it's building to build.
-> (Your domain session assigned you this paragraph — keep it yours; don't let me write it.)
+I built it to explore a simple question: how can someone with limited credit history show evidence of responsible financial behavior? CashFlowIQ looks at current cash flow—income consistency, recurring expenses, overdrafts, and net cash flow—then explains the result in language a person can understand.
 
-## What It Is
+> CashFlowIQ is a portfolio project. It demonstrates backend architecture and explainable scoring; it is not a validated lending model.
 
-An API that turns raw bank transactions into an auditable **0–100 lending risk score**, with an LLM layer that *explains* the decision but never *makes* it.
+[Why CashFlowIQ](#why-cashflowiq) · [How It Works](#how-it-works) · [Scoring Model](#scoring-model) · [Example Response](#example-response) · [API and Local Setup](#api-and-local-setup) · [Tests](#tests) · [Limitations](#limitations) · [Technical Decisions](#technical-decisions)
 
-## The Domain Problem
+![CashFlowIQ report generated through Swagger](docs/cashflowiq-report.png)
 
-Traditional underwriting scores **borrowing history** (credit-bureau data), which fails thin-file / no-file borrowers who may manage money well but have no credit story. CashFlowIQ scores **money behavior** — actual bank-transaction patterns — instead. It complements traditional scores rather than replacing them (it also catches present-tense deterioration that a backward-looking FICO misses).
+## Why CashFlowIQ
 
-## Architecture Thesis (the core principle — say this in interviews)
+Traditional credit scores largely reflect how a person handled borrowed money in the past. That can make thin-file or no-file applicants harder to evaluate, even when their current finances are stable.
 
-**The deterministic layer decides; the LLM only narrates.** Risk scores are computed by transparent, testable math. The ExplanationAgent (Claude API) takes the *already-computed* score and puts it into words — it never touches the number.
+CashFlowIQ explores a second source of context: bank-transaction behavior. The goal is not to replace a credit score. It is to show how a clear, deterministic cash-flow model could support a more complete review.
 
-This is a **regulatory** requirement, not a stylistic one: ECOA / Regulation B adverse-action notices require consistent, auditable reasons for a lending decision. An LLM in the decision path can't guarantee that; deterministic math can. **The LLM is nowhere in the scoring.**
+The core rule is:
 
-## Scoring — the Four Deterministic Signals
+> **The scoring code decides. The LLM only explains.**
 
-1. **Income stability** — coefficient of variation of the income stream
-2. **Recurring expense ratio** — recurring outflows relative to income
-3. **Overdraft / NSF frequency** — how often the account goes negative / incurs fees
-4. **Balance trend** — linear regression over the running balance
+## How It Works
 
-Weighted (documented weights) → **0–100 composite score** → risk tier.
-
-### Why 0–100, not CashScore's 0–999
-
-Prism Data's CashScore (0–999) is the output of a **validated statistical model** predicting 12-month default probability, tested against real loan outcomes. CashFlowIQ's 0–100 is a **transparent weighted composite** — deliberately *not* a claim to replicate that validated model. Copying the 0–999 range without the model behind it would be superficial. Naming the difference — "mine is a transparent, auditable composite demonstrating the architecture; theirs is a validated default model" — is a **feature of understanding their product**, not a gap.
-
-## Data Model
-
-`Business → BankAccount → Transaction` (one-to-many chain).
-Planned: `Business → UnderwritingReport → Explanation` (1:1 via unique FK).
-
-Design decisions:
-- **Money** is `Numeric(12,2)`, never `float` — binary floats can't represent decimal cents exactly and the error accumulates until the ledger won't tie out.
-- **Foreign keys live on the many side**, pointing at the one side (a single FK column expresses "one parent per row").
-- **`Transaction.amount` is positive**; a `direction` enum (`deposit` / `withdrawal`) carries the sign. **Balance is derived** (deposits − withdrawals), not stored — avoids a stale denormalized field.
-- **`Transaction.category`** (enum) labels each transaction so the four signals can be computed: `income`, `recurring_expense`, `transfer`, `fee`, `other`. **Transfers are excluded** from income/expense math so internal journals don't inflate the signals.
-- **Composite index on `(account_id, date)`** serves the core metrics query (`WHERE account_id = ? ORDER BY date`).
-
-### Categorization is a documented production gap
-
-In production, an aggregator (Plaid, or Prism's pipeline) supplies transaction categories — that categorization is itself a hard ML/heuristic problem. The synthetic seed data **assigns categories directly**; the categorization engine is **not faked**, it's documented here as a production dependency. (Same principle as ParcelIQ's "no fake geospatial": build the framework that consumes the data, don't fake the hard upstream step.)
-
-## Tech Decisions
-
-- **Sync-first** (`psycopg2`); async deferred until proven necessary.
-- **Postgres 18 in Docker** (docker-compose, plus a pgAdmin service).
-  - Host port **5433** (`"5433:5432"`) — avoids a collision with a local Postgres 18 install already on 5432. Container-internal port stays 5432.
-  - Volume mount **`/var/lib/postgresql`** (not the classic `/var/lib/postgresql/data`) — Postgres 18 changed the data-dir layout; the old mount crash-loops the container.
-- **Schema via `create_all`** for now; **Alembic migrations deferred** and documented. (`create_all` can't evolve an existing table — schema changes currently require drop + recreate of the dev DB.)
-- **Three-layer architecture**: routers (thin HTTP) → services (pure-function domain logic, unit-tested) → models (SQLAlchemy). `config.py` loads env fail-fast; session-per-request.
-- **Secrets** in `.env` (gitignored); `.env.example` committed. `venv/` never committed.
-- **Deploy target**: Railway.
-- **Reproducible env**: `pip freeze > requirements.txt` so the (disposable) venv can be rebuilt with `pip install -r requirements.txt`.
-
-## Deferred (Deliberately)
-
-Alembic migrations · async · auth / logging / background jobs · human-in-the-loop · real data inputs (Plaid sandbox) · deepened intelligence (more agents / multi-step). Roadmap: Alembic → real data inputs → deepen intelligence → ops.
-
-## Setup
-
-```bash
-docker compose up -d                       # Postgres + pgAdmin
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1               # Windows PowerShell
-pip install -r requirements.txt
-python -c "from db import engine, Model; import models; Model.metadata.create_all(engine)"
-python seed_data.py
+```text
+POST /customers/{customer_id}/reports
+                |
+                v
+Query a fixed three-month transaction window
+                |
+                v
+Calculate four deterministic signal scores
+                |
+                v
+Calculate the weighted score and risk tier
+                |
+                v
+Convert signal scores to qualitative labels
+                |
+                v
+Generate a structured Claude explanation
 ```
 
-_A running decision log lives in `decisions.md` (granular "chose X over Y because Z" entries). This README is the front-door summary._
+The score and tier remain the authoritative result. Claude does not receive raw transactions, calculate the score, or change the decision. If explanation generation fails, the API still returns the deterministic report.
+
+## Scoring Model
+
+| Signal | Weight | Measures |
+|---|---:|---|
+| Income stability | 15% | Consistency of monthly qualifying income |
+| Recurring expense ratio | 25% | Recurring expenses relative to income |
+| Overdraft count | 30% | Overdraft or NSF fees in the observation window |
+| Net cash flow ratio | 30% | Income remaining after relevant outflows |
+
+Each signal receives a score from 0–100. The weighted result is rounded once and mapped to a tier:
+
+```text
+80–100: low
+60–79:  moderate
+40–59:  elevated
+0–39:   high
+```
+
+The scoring functions live in [`metrics.py`](metrics.py). They contain no database queries or LLM calls.
+
+## Example Response
+
+```json
+{
+  "overall_score": 40,
+  "risk_tier": "elevated",
+  "signals": {
+    "income_stability": {"raw": 0.029, "score": 100},
+    "recurring_expense_ratio": {"raw": 1.143, "score": 10},
+    "overdraft_count": {"raw": 2, "score": 45},
+    "net_cash_flow_ratio": {"raw": -0.154, "score": 30}
+  },
+  "explanation": {
+    "summary": "Income stability is a strength, while the remaining signals are concerns.",
+    "key_strengths": ["Income stability"],
+    "key_concerns": [
+      "Recurring expense ratio",
+      "Overdraft count",
+      "Net cash flow ratio"
+    ],
+    "principal_risk_factors": [
+      "Recurring expense ratio",
+      "Overdraft count",
+      "Net cash flow ratio"
+    ]
+  },
+  "explanation_status": "available"
+}
+```
+
+## API and Local Setup
+
+### Main endpoint
+
+```http
+POST /customers/{customer_id}/reports
+```
+
+- `200` — report generated
+- `404` — customer not found
+- `422` — available transaction data cannot produce a valid report
+
+### Run locally
+
+```powershell
+git clone https://github.com/007-ash/cashflowiq.git
+cd cashflowiq
+
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+
+Copy-Item .env.example .env
+docker compose up -d
+
+python -c "from db import engine, Model; import models; Model.metadata.create_all(engine)"
+python seed_data.py
+uvicorn main:app --reload
+```
+
+Add your database URL and Anthropic key to `.env`, then open Swagger at `http://127.0.0.1:8000/docs`.
+
+### Project structure
+
+```text
+cashflowiq/
+├── routers/
+│   ├── bank_account.py
+│   ├── customer.py
+│   ├── reports.py
+│   └── transaction.py
+├── tests/
+│   ├── test_explanation_agent.py
+│   └── test_metrics.py
+├── explanation_agent.py
+├── metrics.py
+├── models.py
+├── schemas.py
+├── seed_data.py
+├── decisions.md
+├── data-specs.md
+├── docker-compose.yml
+└── main.py
+```
+
+## Tests
+
+```powershell
+pytest -q
+```
+
+The suite covers signal boundaries, monthly grouping, composite scoring, risk tiers, missing-data behavior, and structured explanation output.
+
+Explanation tests use Pydantic AI's local `TestModel`, and live model requests are disabled during tests. Running the suite does not call Anthropic or consume API credits.
+
+## Limitations
+
+- Uses synthetic transaction data.
+- Transaction categories are assigned rather than inferred.
+- Uses a fixed three-month window.
+- Score thresholds are manually calibrated and not validated against repayment outcomes.
+- The public API does not yet include authentication or rate limiting.
+- Generated explanations need stronger deterministic grounding before production use.
+
+## Technical Decisions
+
+The deeper reasoning is kept outside the front-page README:
+
+- [`decisions.md`](decisions.md) — scoring choices, tradeoffs, and production-hardening notes
+- [`data-specs.md`](data-specs.md) — transaction assumptions and signal definitions
+- [`metrics.py`](metrics.py) — deterministic scoring implementation
+- [`explanation_agent.py`](explanation_agent.py) — constrained LLM input and structured output
+- [`routers/reports.py`](routers/reports.py) — endpoint orchestration and graceful degradation
+
+The most important design decision is the boundary between the two layers: deterministic code owns the result; the LLM is an optional narrator.
